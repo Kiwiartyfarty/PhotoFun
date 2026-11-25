@@ -103,7 +103,9 @@
   .chip:active, .btn:active { transform: scale(.96); }
   .chip.on, .btn.on { background: var(--active); border-color: transparent; box-shadow: 0 0 20px var(--glow-pink), inset 0 1px 0 rgba(255,255,255,.25); }
   .btn.primary { background: var(--active); border-color: transparent; font-weight: 700; flex: 1 1 100%; padding: 13px 14px; box-shadow: 0 0 18px rgba(255,61,154,.35); }
-  .pic { flex: 0 0 74px; border: 0; padding: 0; background: none; color: #fff; font: 500 11.5px/1.2 var(--font-round); display: flex; flex-direction: column; align-items: center; gap: 6px; opacity: .78; }
+  .pic { position: relative; cursor: pointer; flex: 0 0 74px; border: 0; padding: 0; background: none; color: #fff; font: 500 11.5px/1.2 var(--font-round); display: flex; flex-direction: column; align-items: center; gap: 6px; opacity: .78; }
+  /* Delete badge on your own loaded pictures. */
+  .pic .del { position: absolute; top: -6px; right: -6px; width: 26px; height: 26px; border-radius: 50%; border: 0; padding: 0; background: var(--active); color: #fff; font: 700 17px/26px var(--font); box-shadow: 0 0 10px rgba(255,61,154,.5); }
   .pic i { width: 74px; height: 92px; border-radius: 16px; background: #1b2030 var(--img) center / cover no-repeat; outline: 2px solid transparent; outline-offset: 2px; display: grid; place-items: center; font-style: normal; font-size: 26px; color: rgba(255,255,255,.75); box-shadow: inset 0 0 0 1px var(--panel-line); }
   .pic.on { opacity: 1; }
   .pic.on i { outline-color: var(--pink); box-shadow: 0 0 18px var(--glow-pink); }
@@ -159,7 +161,7 @@
   <h2>Save</h2>
   <div class="row"><button class="btn" id="savePic">Save picture</button><button class="btn" id="record">Record wiggle video</button></div>
   <h2>This picture</h2>
-  <div class="row"><button class="btn" id="startOver">Start over</button><button class="btn" id="fit">Fit to screen</button><button class="btn off" id="remove">Remove picture</button></div>
+  <div class="row"><button class="btn" id="startOver">Start over</button><button class="btn" id="clearWigglesMenu">Clear wiggles</button><button class="btn" id="clearEffect">Clear effect</button><button class="btn" id="fit">Fit to screen</button><button class="btn off" id="remove">Delete picture</button></div>
   <h2>App</h2>
   <div class="row"><button class="btn" id="install">Get the app</button><button class="btn" id="share">Share</button><button class="btn" id="save">Save file</button></div>
   <div class="small">Two fingers to zoom and move around. Your pictures and edits stay on this device.</div>
@@ -433,10 +435,14 @@ const EFFECTS = [
   ['none', 'None'], ['neon', 'Neon'], ['pop', 'Pop art'], ['comic', 'Comic'], ['vintage', 'Vintage'],
   ['noir', 'Noir'], ['dreamy', 'Dreamy'], ['rainbow', 'Rainbow'], ['thermal', 'Thermal'],
   ['mirror', 'Mirror'], ['pixel', 'Pixel'], ['glitch', 'Glitch'],
+  // Added later; the order here is the number the shader uses, so new ones go on the end.
+  ['kaleido', 'Kaleidoscope'], ['synthwave', 'Synthwave'], ['sketch', 'Sketch'], ['halftone', 'Halftone'],
+  ['emboss', 'Emboss'], ['nightvision', 'Night vision'], ['fisheye', 'Fisheye'], ['ripple', 'Ripple'],
+  ['xray', 'X-ray'], ['vhs', 'VHS'],
 ];
 const fxIndex = (id) => Math.max(0, EFFECTS.findIndex((e) => e[0] === id));
-const ANIMATED = new Set(['rainbow', 'glitch']);
-const GL_ONLY = new Set(['mirror', 'pixel', 'glitch']);
+const ANIMATED = new Set(['rainbow', 'glitch', 'nightvision', 'ripple', 'vhs']);
+const GL_ONLY = new Set(['mirror', 'pixel', 'glitch', 'kaleido', 'sketch', 'halftone', 'emboss', 'fisheye', 'ripple', 'vhs']);
 
 // Canvas-filter version of each effect (a = amount 0..1, t = seconds).
 function cssFilter(id, a, t) {
@@ -450,6 +456,9 @@ function cssFilter(id, a, t) {
     case 'dreamy': return `blur(${l(0, 1.2)}px) brightness(${l(1, 1.12)}) saturate(${l(1, 1.2)})`;
     case 'rainbow': return `hue-rotate(${Math.round((t * 90) % 360 * a)}deg) saturate(${l(1, 1.3)})`;
     case 'thermal': return `grayscale(${a}) sepia(${a}) saturate(${l(1, 5)}) hue-rotate(${Math.round(-50 * a)}deg) contrast(${l(1, 1.3)})`;
+    case 'synthwave': return `sepia(${a}) hue-rotate(${Math.round(-70 * a)}deg) saturate(${l(1, 3)}) contrast(${l(1, 1.15)})`;
+    case 'nightvision': return `grayscale(${a}) sepia(${a}) hue-rotate(${Math.round(65 * a)}deg) saturate(${l(1, 4)}) brightness(${l(1, 1.2)})`;
+    case 'xray': return `invert(${a}) grayscale(${a}) contrast(${l(1, 1.25)})`;
     default: return 'none';
   }
 }
@@ -477,6 +486,30 @@ void main() {
   vec2 uv = v_uv;
   if (fx == 9) { if (uv.x > 0.5) uv.x = 1.0 - uv.x; }
   if (fx == 10) { vec2 cell = u_px * mix(4.0, 48.0, u_mix); uv = (floor(uv / cell) + 0.5) * cell; }
+  vec2 pc = v_uv - 0.5;
+  float pr = length(pc);
+  if (fx == 12) {
+    // Kaleidoscope: fold the picture into mirrored slices round the middle (more slices with Amount).
+    float n = floor(mix(3.0, 10.0, u_mix));
+    float seg = 6.28318 / n;
+    float a = mod(atan(pc.y, pc.x), seg);
+    a = abs(a - seg * 0.5);
+    uv = 0.5 + pr * vec2(cos(a), sin(a));
+  }
+  if (fx == 18) {
+    // Fisheye: bulge the middle out like a lens.
+    float f = mix(1.0, (pr * 2.0) * (pr * 2.0) * 0.7 + 0.3, u_mix);
+    uv = 0.5 + pc * f;
+  }
+  if (fx == 19) {
+    // Ripple: rings running outward like water.
+    uv += (pc / (pr + 0.0001)) * sin(pr * 55.0 - u_t * 5.0) * 0.009 * u_mix;
+  }
+  if (fx == 21) {
+    // VHS wobble: rows slide a little, more on a rolling band.
+    float band = 1.0 - smoothstep(0.0, 0.08, abs(fract(v_uv.y - u_t * 0.12) - 0.5));
+    uv.x += sin(v_uv.y * 40.0 + u_t * 6.0) * 0.0015 + band * 0.01;
+  }
   vec4 src = tex(uv);
   vec3 c = src.rgb;
   vec3 o = c;
@@ -497,11 +530,11 @@ void main() {
   } else if (fx == 4) {
     float l = lum(c);
     o = mix(vec3(l * 1.07 + 0.06, l * 0.92 + 0.04, l * 0.72 + 0.02), c, 0.18);
-    o *= 0.65 + 0.35 * smoothstep(0.85, 0.35, distance(v_uv, vec2(0.5)));
+    o *= 0.65 + 0.35 * (1.0 - smoothstep(0.35, 0.85, distance(v_uv, vec2(0.5))));
     o = o * 0.9 + 0.06;
   } else if (fx == 5) {
     float l = smoothstep(0.08, 0.85, lum(c));
-    o = vec3(l) * (0.55 + 0.45 * smoothstep(0.9, 0.3, distance(v_uv, vec2(0.5))));
+    o = vec3(l) * (0.55 + 0.45 * (1.0 - smoothstep(0.3, 0.9, distance(v_uv, vec2(0.5)))));
   } else if (fx == 6) {
     vec3 b = vec3(0.0);
     for (int i = 0; i < 12; i++) {
@@ -522,10 +555,59 @@ void main() {
     vec2 sh = vec2(j * 0.03 * sin(u_t * 30.0 + band), 0.0);
     o = vec3(tex(uv + sh + vec2(u_px.x * 6.0, 0.0)).r, tex(uv + sh).g, tex(uv + sh - vec2(u_px.x * 6.0, 0.0)).b);
     o *= 0.92 + 0.08 * sin(v_uv.y * 900.0);
+  } else if (fx == 13) {
+    // Synthwave: dark purple shadows, hot pink middles, cyan highlights.
+    float l = lum(c);
+    o = mix(vec3(0.12, 0.02, 0.35), vec3(1.0, 0.22, 0.65), smoothstep(0.08, 0.6, l));
+    o = mix(o, vec3(0.35, 0.95, 1.0), smoothstep(0.62, 1.0, l));
+  } else if (fx == 14) {
+    // Sketch: pencil lines on paper.
+    float gx = lum(tex(uv + vec2(u_px.x, 0.0)).rgb) - lum(tex(uv - vec2(u_px.x, 0.0)).rgb);
+    float gy = lum(tex(uv + vec2(0.0, u_px.y)).rgb) - lum(tex(uv - vec2(0.0, u_px.y)).rgb);
+    float e = smoothstep(0.02, 0.18, length(vec2(gx, gy)) * 2.0);
+    float shade = smoothstep(0.0, 0.7, lum(c));
+    o = vec3(0.97, 0.95, 0.9) * (1.0 - e * 0.85) * mix(0.82, 1.0, shade);
+  } else if (fx == 15) {
+    // Halftone: comic-print dots, bigger where it is darker.
+    float s = 7.0;
+    vec2 q = v_uv / (u_px * s);
+    vec2 rq = vec2(q.x * 0.7071 - q.y * 0.7071, q.x * 0.7071 + q.y * 0.7071);
+    vec2 cellc = floor(rq) + 0.5;
+    vec2 back = vec2(cellc.x * 0.7071 + cellc.y * 0.7071, -cellc.x * 0.7071 + cellc.y * 0.7071) * u_px * s;
+    vec3 cc = tex(back).rgb;
+    float r = sqrt(1.0 - lum(cc)) * 0.62;
+    float ink = 1.0 - smoothstep(r - 0.06, r + 0.06, length(rq - cellc));
+    o = mix(vec3(0.97, 0.95, 0.9), sat(cc, 1.4) * 0.9, ink);
+  } else if (fx == 16) {
+    // Emboss: raised, metal-like relief.
+    float e = lum(tex(uv - u_px * 1.5).rgb) - lum(tex(uv + u_px * 1.5).rgb);
+    o = mix(vec3(0.5 + e * 2.5), c, 0.15);
+  } else if (fx == 17) {
+    // Night vision: green glow, grain, scan lines and a round scope.
+    float l = lum(c) * 1.7;
+    float grain = fract(sin(dot(v_uv * 900.0 + u_t, vec2(12.9898, 78.233))) * 43758.5453);
+    o = vec3(0.12, 1.0, 0.25) * l * (0.85 + 0.25 * grain);
+    o *= 0.85 + 0.15 * sin(v_uv.y * 700.0);
+    o *= 1.0 - smoothstep(0.35, 0.75, pr);
+  } else if (fx == 20) {
+    // X-ray: negative with a cold blue glow on the edges.
+    float gx = lum(tex(uv + vec2(u_px.x * 2.0, 0.0)).rgb) - lum(tex(uv - vec2(u_px.x * 2.0, 0.0)).rgb);
+    float gy = lum(tex(uv + vec2(0.0, u_px.y * 2.0)).rgb) - lum(tex(uv - vec2(0.0, u_px.y * 2.0)).rgb);
+    float l = 1.0 - lum(c);
+    o = vec3(l * 0.75, l * 0.9, l) + vec3(0.3, 0.6, 1.0) * length(vec2(gx, gy)) * 2.0;
+  } else if (fx == 21) {
+    // VHS: colours bleed sideways, faded tape colours, lines and snow.
+    o = vec3(tex(uv + vec2(u_px.x * 5.0, 0.0)).r, tex(uv).g, tex(uv - vec2(u_px.x * 5.0, 0.0)).b);
+    o = sat(o, 0.8) * 0.95 + vec3(0.03, 0.0, 0.05);
+    o *= 0.9 + 0.1 * sin(v_uv.y * 500.0);
+    float snow = fract(sin(dot(v_uv * 700.0 + floor(u_t * 24.0), vec2(12.9898, 78.233))) * 43758.5453);
+    o += (snow - 0.5) * 0.08;
   }
-  // Mirror and Pixel reshape the picture itself; the others blend in by the amount.
-  vec3 base = (fx == 9 || fx == 10) ? c : tex(v_uv).rgb;
-  float m = (fx == 9 || fx == 10) ? 1.0 : (fx == 0 ? 0.0 : u_mix);
+  // Mirror, Pixel, Kaleidoscope, Fisheye and Ripple reshape the picture itself (Amount sets how
+  // much inside them); the others blend in by the amount.
+  bool shape = fx == 9 || fx == 10 || fx == 12 || fx == 18 || fx == 19;
+  vec3 base = shape ? c : tex(v_uv).rgb;
+  float m = shape ? 1.0 : (fx == 0 ? 0.0 : u_mix);
   gl_FragColor = vec4(mix(base, clamp(o, 0.0, 1.0), m), src.a);
 }`;
 
@@ -872,8 +954,16 @@ function saveSoon() {
   }, 700);
 }
 
+// Undo steps remember the shape, the wiggles and the effect.
+const snap = () => ({ ...warp.snapshot(), fx, fxAmount });
+function applySnap(s) {
+  warp.restore(s);
+  if (s.fx !== undefined) { fx = s.fx; fxAmount = s.fxAmount; renderer.setEffect(fx, fxAmount); syncEffects(); }
+  dirty = true;
+}
+
 function remember() {
-  undo.push(warp.snapshot());
+  undo.push(snap());
   if (undo.length > 40) undo.shift();
   redo = [];
   syncUndo();
@@ -948,7 +1038,7 @@ ov.addEventListener('pointerdown', (e) => {
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (pointers.size === 2) {
     // Second finger: zoom and move instead; undo a stroke that only just began.
-    if (stroke && performance.now() - stroke.t < 250 && undo.length) { warp.restore(undo.pop()); syncUndo(); }
+    if (stroke && performance.now() - stroke.t < 250 && undo.length) { applySnap(undo.pop()); syncUndo(); }
     stroke = null;
     const [a, b] = [...pointers.values()];
     pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
@@ -1158,17 +1248,47 @@ function toast(msg, ms = 3800) {
 
 function closeMenu() { $('menu').classList.remove('open'); }
 
+function clearWiggles() {
+  if (!warp) { toast('Load a picture first.'); return; }
+  if (!warp.zones.length) { toast('There are no wiggles on this picture.'); return; }
+  remember(); warp.zones = []; warp.selected = null; dirty = true; saveSoon();
+  toast('All wiggles cleared. Undo brings them back.', 2400);
+}
+
+// Deletes a loaded picture (and its changes) from this device.
+async function deletePicture(id) {
+  const p = pics.get(id);
+  if (!p || !p.mine) { toast('Pick one of your loaded pictures first.'); return; }
+  if (!confirm(`Delete "${p.name}" and its changes from this device?`)) return;
+  try { await db.removePicture(id); } catch {}
+  if (p.src && p.src.startsWith('blob:')) URL.revokeObjectURL(p.src);
+  pics.delete(id);
+  toast(`Deleted "${p.name}".`, 2200);
+  if (id === currentId || !warp) await selectPicture(firstPicture());
+  else syncPics();
+}
+
 function syncPics() {
   const row = $('pics');
   row.textContent = '';
   for (const p of pics.values()) {
-    const b = document.createElement('button');
+    const b = document.createElement('div');
     b.className = 'pic' + (p.id === currentId ? ' on' : '');
+    b.setAttribute('role', 'button');
+    b.tabIndex = 0;
     const i = document.createElement('i');
     i.style.setProperty('--img', `url("${p.src}")`);
     const s = document.createElement('span');
     s.textContent = p.name;
     b.append(i, s);
+    if (p.mine) {
+      const x = document.createElement('button');
+      x.className = 'del';
+      x.setAttribute('aria-label', `Delete ${p.name}`);
+      x.textContent = '×';
+      x.onclick = (e) => { e.stopPropagation(); deletePicture(p.id); };
+      b.appendChild(x);
+    }
     b.onclick = () => { closeMenu(); selectPicture(p.id); };
     row.appendChild(b);
   }
@@ -1218,7 +1338,7 @@ function syncEffects() {
   if ($('effects').sync) $('effects').sync();
   $('fxAmount').value = Math.round(fxAmount * 100);
   $('fxAmountRow').classList.toggle('off', fx === 'none' || fx === 'mirror');
-  $('fxAmountRow').querySelector('span').textContent = fx === 'pixel' ? 'Block size' : 'Amount';
+  $('fxAmountRow').querySelector('span').textContent = { pixel: 'Block size', kaleido: 'Slices', fisheye: 'Bulge', ripple: 'Waves' }[fx] || 'Amount';
 }
 
 function syncPlay() {
@@ -1255,19 +1375,31 @@ function buildUI() {
   $('amount').oninput = () => { amount = +$('amount').value; prefs.set('amount', amount); if (warp && warp.selected) { warp.selected.amount = amount / 100; saveSoon(); } };
   $('speed').oninput = () => { speed = +$('speed').value; prefs.set('speed', speed); if (warp && warp.selected) { warp.selected.speed = speed / 100; saveSoon(); } };
   $('removeWiggle').onclick = () => {
-    if (!warp || !warp.selected) { toast('Tap a wiggle first to pick it.'); return; }
+    if (!warp) { toast('Load a picture first.'); return; }
+    if (!warp.selected) { toast(warp.zones.length ? 'Tap a wiggle first to pick it, then remove it.' : 'There are no wiggles on this picture.'); return; }
     remember(); warp.zones = warp.zones.filter((z) => z !== warp.selected); warp.selected = null; dirty = true; saveSoon();
+    toast('Wiggle removed.', 1800);
   };
-  $('clearWiggles').onclick = () => { if (!warp || !warp.zones.length) return; remember(); warp.zones = []; warp.selected = null; dirty = true; saveSoon(); };
+  $('clearWiggles').onclick = clearWiggles;
+  $('clearWigglesMenu').onclick = () => { closeMenu(); clearWiggles(); };
+  $('clearEffect').onclick = () => {
+    closeMenu();
+    if (!warp) { toast('Load a picture first.'); return; }
+    if (fx === 'none') { toast('There is no effect on this picture.'); return; }
+    remember(); fx = 'none'; renderer.setEffect(fx, fxAmount); syncEffects(); dirty = true; saveSoon();
+    toast('Effect cleared. Undo brings it back.', 2400);
+  };
   chips('effects', EFFECTS, (v) => v === fx, (v) => {
+    if (!warp) { toast('Load a picture first.'); return; }
     if (!renderer.fast && GL_ONLY.has(v)) { toast('That effect needs the graphics chip, which this browser is not using.'); return; }
-    fx = v; renderer.setEffect(fx, fxAmount); syncEffects(); dirty = true; saveSoon();
+    if (v === fx) return;
+    remember(); fx = v; renderer.setEffect(fx, fxAmount); syncEffects(); dirty = true; saveSoon();
   });
   $('fxAmount').oninput = () => { fxAmount = +$('fxAmount').value / 100; renderer.setEffect(fx, fxAmount); dirty = true; saveSoon(); };
   syncTool(); syncWiggleSliders(); syncPlay(); syncUndo();
 
-  $('undo').onclick = () => { if (!undo.length) return; redo.push(warp.snapshot()); warp.restore(undo.pop()); syncUndo(); dirty = true; saveSoon(); };
-  $('redo').onclick = () => { if (!redo.length) return; undo.push(warp.snapshot()); warp.restore(redo.pop()); syncUndo(); dirty = true; saveSoon(); };
+  $('undo').onclick = () => { if (!warp || !undo.length) return; redo.push(snap()); applySnap(undo.pop()); syncUndo(); saveSoon(); };
+  $('redo').onclick = () => { if (!warp || !redo.length) return; undo.push(snap()); applySnap(redo.pop()); syncUndo(); saveSoon(); };
   const hold = (on) => () => { before = on; dirty = true; };
   $('before').addEventListener('pointerdown', hold(true));
   for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) $('before').addEventListener(ev, hold(false));
@@ -1281,16 +1413,16 @@ function buildUI() {
   $('file').onchange = (e) => { const f = e.target.files; addFiles(f).finally(() => { e.target.value = ''; }); };
   $('savePic').onclick = savePicture;
   $('record').onclick = recordWiggle;
-  $('startOver').onclick = () => { closeMenu(); if (!warp || !warp.changed) return; remember(); warp.reset(); fx = 'none'; renderer.setEffect(fx, fxAmount); syncEffects(); dirty = true; saveSoon(); toast('Back to the original. Undo brings your changes back.'); };
-  $('fit').onclick = () => { closeMenu(); fitView(); };
-  $('remove').onclick = async () => {
-    const cur = pics.get(currentId);
-    if (!cur || !cur.mine || !confirm('Remove this picture and its changes from this device?')) return;
-    await db.removePicture(cur.id);
-    pics.delete(cur.id);
+  // Start over: shape, wiggles and effect all go back to the original picture.
+  $('startOver').onclick = () => {
     closeMenu();
-    selectPicture(firstPicture());
+    if (!warp) { toast('Load a picture first.'); return; }
+    if (!warp.changed && fx === 'none') { fitView(); toast('This picture is already the original.'); return; }
+    remember(); warp.reset(); fx = 'none'; renderer.setEffect(fx, fxAmount); syncEffects(); fitView(); dirty = true; saveSoon();
+    toast('Back to the original. Undo brings your changes back.');
   };
+  $('fit').onclick = () => { closeMenu(); fitView(); };
+  $('remove').onclick = () => { closeMenu(); deletePicture(currentId); };
   $('install').onclick = install;
   if (standalone) $('install').classList.add('off');
   $('share').onclick = share;
